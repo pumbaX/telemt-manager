@@ -478,11 +478,6 @@ do_install_panel() {
         return
     fi
 
-    if ! systemctl is-active --quiet telemt 2>/dev/null; then
-        error "Сначала установи Telemt (пункт 1)."
-        return
-    fi
-
     echo ""
     echo -ne " Порт панели [по умолчанию 8080]: "
     read -r panel_port_input
@@ -626,7 +621,6 @@ EOF
         return
     fi
 
-    local PUBLIC_IP
     PUBLIC_IP=$(curl -s -4 --max-time 10 ifconfig.me)
 
     echo ""
@@ -762,6 +756,113 @@ do_update_panel() {
     fi
 }
 
+
+# ==============================
+# АВТООБНОВЛЕНИЕ
+# ==============================
+do_autoupdate() {
+    local CRON_JOB="0 */3 * * * /usr/local/bin/telemt-autoupdate.sh"
+    local SCRIPT="/usr/local/bin/telemt-autoupdate.sh"
+    local IS_ENABLED=false
+
+    crontab -l 2>/dev/null | grep -q "telemt-autoupdate" && IS_ENABLED=true
+
+    echo ""
+    if $IS_ENABLED; then
+        echo -e " Автообновление: ${GREEN}ВКЛЮЧЕНО${NC} (каждые 3 часа)"
+    else
+        echo -e " Автообновление: ${RED}ВЫКЛЮЧЕНО${NC}"
+    fi
+    echo ""
+    echo "  1. Включить автообновление"
+    echo "  2. Выключить автообновление"
+    echo "  3. Показать лог обновлений"
+    echo "  0. Назад"
+    echo -ne " Выбор: "
+    read -r au_choice
+
+    case $au_choice in
+        1)
+            # Создаём скрипт автообновления
+            cat > "$SCRIPT" << 'AUTOUPDATE'
+#!/bin/bash
+API_PORT="9091"
+LOG="/var/log/telemt-autoupdate.log"
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG"; }
+
+# === Обновление Telemt ===
+if systemctl is-active --quiet telemt 2>/dev/null; then
+    CURRENT=$(curl -s --max-time 5 "http://127.0.0.1:${API_PORT}/v1/system/info" | jq -r '.data.version // ""')
+    LATEST=$(curl -s --max-time 10 "https://api.github.com/repos/telemt/telemt/releases/latest" | jq -r '.tag_name // ""' | tr -d 'v')
+    if [[ -n "$CURRENT" && -n "$LATEST" && "$CURRENT" != "$LATEST" ]]; then
+        log "Telemt: обновление $CURRENT -> $LATEST"
+        ARCH=$(uname -m); LIBC="gnu"
+        for f in /lib/ld-musl-*.so.* /lib64/ld-musl-*.so.*; do [ -e "$f" ] && { LIBC="musl"; break; }; done
+        curl -fsSL "https://github.com/telemt/telemt/releases/latest/download/telemt-${ARCH}-linux-${LIBC}.tar.gz" -o /tmp/telemt.tar.gz
+        tar -xz -C /tmp -f /tmp/telemt.tar.gz && rm -f /tmp/telemt.tar.gz
+        if [[ -f /tmp/telemt ]]; then
+            systemctl stop telemt
+            install -m 755 /tmp/telemt /usr/local/bin/telemt && rm -f /tmp/telemt
+            command -v setcap &>/dev/null && setcap cap_net_bind_service=+ep /usr/local/bin/telemt 2>/dev/null
+            systemctl start telemt
+            log "Telemt: обновлён до $LATEST"
+        fi
+    else
+        log "Telemt: актуальная версия $CURRENT"
+    fi
+fi
+
+# === Обновление панели ===
+if [[ -f /usr/local/bin/telemt-panel ]]; then
+    ARCH=$(uname -m)
+    case "$ARCH" in x86_64) AS="x86_64" ;; aarch64) AS="aarch64" ;; *) exit 1 ;; esac
+    BN="telemt-panel-${AS}-linux-gnu.tar.gz"
+    LATEST_P=$(curl -s --max-time 10 "https://api.github.com/repos/amirotin/telemt_panel/releases/latest" | jq -r '.tag_name // ""')
+    CURRENT_P=$(/usr/local/bin/telemt-panel version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [[ -n "$LATEST_P" && "v${CURRENT_P}" != "$LATEST_P" ]]; then
+        log "Panel: updating -> $LATEST_P"
+        DL=$(curl -s --max-time 10 "https://api.github.com/repos/amirotin/telemt_panel/releases/latest" \
+            | jq -r --arg bn "$BN" '.assets[] | select(.name == $bn) | .browser_download_url')
+        if [[ -n "$DL" ]]; then
+            curl -fsSL "$DL" -o /tmp/telemt-panel.tar.gz
+            tar -xz -C /tmp -f /tmp/telemt-panel.tar.gz && rm -f /tmp/telemt-panel.tar.gz
+            EX=$(find /tmp -maxdepth 1 -name "telemt-panel-*-linux" -type f | head -1)
+            if [[ -n "$EX" ]]; then
+                systemctl stop telemt-panel
+                install -m 755 "$EX" /usr/local/bin/telemt-panel && rm -f "$EX"
+                systemctl start telemt-panel
+                log "Panel: updated to $LATEST_P"
+            fi
+        fi
+    else
+        log "Panel: up to date"
+    fi
+fi
+AUTOUPDATE
+            chmod +x "$SCRIPT"
+            # Добавляем в cron если ещё нет
+            ( crontab -l 2>/dev/null | grep -v "telemt-autoupdate"; echo "$CRON_JOB" ) | crontab -
+            info "Автообновление включено — каждые 3 часа"
+            info "Логи: /var/log/telemt-autoupdate.log"
+            ;;
+        2)
+            crontab -l 2>/dev/null | grep -v "telemt-autoupdate" | crontab -
+            rm -f "$SCRIPT"
+            info "Автообновление отключено"
+            ;;
+        3)
+            if [[ -f /var/log/telemt-autoupdate.log ]]; then
+                echo ""
+                tail -30 /var/log/telemt-autoupdate.log
+            else
+                warn "Лог пустой — обновлений ещё не было"
+            fi
+            ;;
+        0) return ;;
+        *) warn "Неверный выбор" ;;
+    esac
+}
+
 # ==============================
 # МЕНЮ
 # ==============================
@@ -781,6 +882,8 @@ while true; do
     echo -e "${CYAN}║${NC}  7. Установить панель        ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  8. Обновить панель          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  9. Удалить панель           ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  --- Система ---              ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  10. Автообновление          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  0. Выход                    ${CYAN}║${NC}"
     echo -e "${CYAN}╚══════════════════════════════╝${NC}"
     echo -ne " Выбор: "
@@ -796,6 +899,7 @@ while true; do
         7) do_install_panel ;;
         8) do_update_panel ;;
         9) do_remove_panel ;;
+        10) do_autoupdate ;;
         0) exit 0 ;;
         *) warn "Неверный выбор" ;;
     esac
