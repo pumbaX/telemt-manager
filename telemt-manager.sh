@@ -730,9 +730,21 @@ do_update_telemt() {
             ;;
         2)
             echo ""
+            info "Ищу последний pre-release..."
+            local PRERELEASE
+            PRERELEASE=$(curl -s --max-time 10                 "https://api.github.com/repos/telemt/telemt/releases?per_page=10"                 | jq -r '[.[] | select(.prerelease == true)] | first | .tag_name // ""'                 | tr -d 'v')
+
+            if [[ -n "$PRERELEASE" ]]; then
+                echo -e " Последний pre-release: ${YELLOW}${PRERELEASE}${NC}"
+            else
+                warn "Pre-release не найден"
+            fi
+            echo ""
             echo -e " Доступные релизы: ${CYAN}https://github.com/telemt/telemt/releases${NC}"
-            echo -ne " Введи версию (например 3.3.29): "
+            echo -ne " Введи версию [Enter = ${PRERELEASE:-вручную}]: "
             read -r custom_ver
+            # Если Enter — берём последний pre-release
+            [[ -z "$custom_ver" && -n "$PRERELEASE" ]] && custom_ver="$PRERELEASE"
             [[ -z "$custom_ver" ]] && { error "Версия не может быть пустой"; return; }
             # Убираем префикс v если есть
             custom_ver="${custom_ver#v}"
@@ -923,18 +935,18 @@ while true; do
     echo -e "${CYAN}╔══════════════════════════════╗${NC}"
     echo -e "${CYAN}║      TELEMT MANAGER          ║${NC}"
     echo -e "${CYAN}╠══════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  --- Telemt ---              ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  --- Telemt ---               ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  1. Установка                ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  2. Ссылки / статистика      ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  3. Добавить клиента         ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  4. Удалить клиента          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  5. Обновить Telemt          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  6. Полное удаление          ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  --- Панель ---              ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  --- Панель ---               ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  7. Установить панель        ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  8. Обновить панель          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  9. Удалить панель           ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  --- Система ---             ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  --- Система ---              ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  10. Автообновление          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  0. Выход                    ${CYAN}║${NC}"
     echo -e "${CYAN}╚══════════════════════════════╝${NC}"
