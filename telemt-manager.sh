@@ -136,9 +136,11 @@ do_install() {
     fi
     tar -xz -C /tmp -f /tmp/telemt.tar.gz
     rm -f /tmp/telemt.tar.gz
-    [[ ! -f /tmp/telemt ]] && { error "Бинарь не найден после распаковки"; return; }
-    install -m 755 /tmp/telemt /usr/local/bin/telemt
-    rm -f /tmp/telemt
+    local EXTRACTED_TELEMT
+    EXTRACTED_TELEMT=$(find /tmp -maxdepth 1 -name "telemt*" -type f ! -name "*.tar.gz" | head -1)
+    [[ -z "$EXTRACTED_TELEMT" ]] && { error "Бинарь не найден после распаковки"; return; }
+    install -m 755 "$EXTRACTED_TELEMT" /usr/local/bin/telemt
+    rm -f "$EXTRACTED_TELEMT"
     # setcap для работы на порту <1024 без root (предпочтительно над AmbientCapabilities)
     if command -v setcap &>/dev/null; then
         setcap cap_net_bind_service=+ep /usr/local/bin/telemt 2>/dev/null || true
@@ -328,6 +330,13 @@ do_remove() {
     info "Удаляю пользователя..."
     userdel -r telemt 2>/dev/null || true
     groupdel telemt 2>/dev/null || true
+
+    # --- Отключаем автообновление если активно ---
+    if crontab -l 2>/dev/null | grep -q "telemt-autoupdate"; then
+        info "Отключаю автообновление..."
+        crontab -l 2>/dev/null | grep -v "telemt-autoupdate" | crontab -
+        rm -f /usr/local/bin/telemt-autoupdate.sh
+    fi
 
     systemctl daemon-reload
 
@@ -633,31 +642,11 @@ EOF
 }
 
 # ==============================
-# ОБНОВЛЕНИЕ TELEMT
+# ВСПОМОГАТЕЛЬНАЯ: установка бинаря telemt
+# $1 = версия (например "3.3.29") или "latest"
 # ==============================
-do_update_telemt() {
-    info "Проверяю текущую версию..."
-    local CURRENT
-    CURRENT=$(curl -s --max-time 5 "http://127.0.0.1:${API_PORT}/v1/system/info"         | jq -r '.data.version // "unknown"' 2>/dev/null)
-
-    info "Проверяю последний релиз..."
-    local LATEST
-    LATEST=$(curl -s --max-time 10 "https://api.github.com/repos/telemt/telemt/releases/latest"         | jq -r '.tag_name // "unknown"' | tr -d 'v')
-
-    echo ""
-    echo -e " Установлена: ${CYAN}${CURRENT}${NC}"
-    echo -e " Последняя:   ${CYAN}${LATEST}${NC}"
-    echo ""
-
-    if [[ "$CURRENT" == "$LATEST" ]]; then
-        info "Уже установлена последняя версия."
-        return
-    fi
-
-    echo -ne " Обновить telemt до ${LATEST}? [y/N]: "
-    read -r confirm
-    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { warn "Отменено."; return; }
-
+_install_telemt_binary() {
+    local VERSION="$1"
     local ARCH LIBC
     ARCH=$(uname -m)
     LIBC="gnu"
@@ -667,34 +656,96 @@ do_update_telemt() {
     grep -qE '^ID="?alpine"?' /etc/os-release 2>/dev/null && LIBC="musl"
     ldd --version 2>&1 | grep -qi musl && LIBC="musl"
 
-    local BINARY_URL="https://github.com/telemt/telemt/releases/latest/download/telemt-${ARCH}-linux-${LIBC}.tar.gz"
+    local BINARY_URL
+    if [[ "$VERSION" == "latest" ]]; then
+        BINARY_URL="https://github.com/telemt/telemt/releases/latest/download/telemt-${ARCH}-linux-${LIBC}.tar.gz"
+    else
+        BINARY_URL="https://github.com/telemt/telemt/releases/download/${VERSION}/telemt-${ARCH}-linux-${LIBC}.tar.gz"
+    fi
 
-    info "Скачиваю новую версию..."
+    info "Скачиваю: $BINARY_URL"
     if ! curl -fsSL "$BINARY_URL" -o /tmp/telemt.tar.gz; then
         error "Не удалось скачать бинарь"
-        return
+        return 1
     fi
     tar -xz -C /tmp -f /tmp/telemt.tar.gz
     rm -f /tmp/telemt.tar.gz
-    [[ ! -f /tmp/telemt ]] && { error "Бинарь не найден после распаковки"; return; }
+
+    # Ищем бинарь — имя может отличаться (telemt или telemt-x86_64-unknown-linux-gnu)
+    local EXTRACTED
+    EXTRACTED=$(find /tmp -maxdepth 1 -name "telemt*" -type f ! -name "*.tar.gz" | head -1)
+    [[ -z "$EXTRACTED" ]] && { error "Бинарь не найден после распаковки"; return 1; }
 
     info "Останавливаю сервис..."
     systemctl stop telemt 2>/dev/null || true
-    install -m 755 /tmp/telemt /usr/local/bin/telemt
-    rm -f /tmp/telemt
+    install -m 755 "$EXTRACTED" /usr/local/bin/telemt
+    rm -f "$EXTRACTED"
     if command -v setcap &>/dev/null; then
         setcap cap_net_bind_service=+ep /usr/local/bin/telemt 2>/dev/null || true
     fi
 
-    info "Запускаю обновлённый сервис..."
+    info "Запускаю сервис..."
     systemctl start telemt
     sleep 3
 
     if systemctl is-active --quiet telemt; then
-        info "Telemt обновлён до версии ${LATEST} ✓"
+        return 0
     else
-        error "Сервис не запустился после обновления. Проверь: journalctl -u telemt -n 30"
+        error "Сервис не запустился. Проверь: journalctl -u telemt -n 30"
+        return 1
     fi
+}
+
+# ==============================
+# ОБНОВЛЕНИЕ TELEMT
+# ==============================
+do_update_telemt() {
+    local CURRENT
+    CURRENT=$(curl -s --max-time 5 "http://127.0.0.1:${API_PORT}/v1/system/info"         | jq -r '.data.version // "unknown"' 2>/dev/null)
+    local LATEST
+    LATEST=$(curl -s --max-time 10 "https://api.github.com/repos/telemt/telemt/releases/latest"         | jq -r '.tag_name // "unknown"' | tr -d 'v')
+
+    echo ""
+    echo -e " Установлена: ${CYAN}${CURRENT}${NC}"
+    echo -e " Последняя стабильная: ${CYAN}${LATEST}${NC}"
+    echo ""
+    echo "  1. Обновить до последней стабильной (${LATEST})"
+    echo "  2. Установить конкретную версию (pre-release)"
+    echo "  0. Назад"
+    echo -ne " Выбор: "
+    read -r upd_choice
+
+    case $upd_choice in
+        1)
+            if [[ "$CURRENT" == "$LATEST" ]]; then
+                info "Уже установлена последняя стабильная версия."
+                return
+            fi
+            echo -ne " Обновить до ${LATEST}? [y/N]: "
+            read -r confirm
+            [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { warn "Отменено."; return; }
+            if _install_telemt_binary "latest"; then
+                info "Telemt обновлён до ${LATEST} ✓"
+            fi
+            ;;
+        2)
+            echo ""
+            echo -e " Доступные релизы: ${CYAN}https://github.com/telemt/telemt/releases${NC}"
+            echo -ne " Введи версию (например 3.3.29): "
+            read -r custom_ver
+            [[ -z "$custom_ver" ]] && { error "Версия не может быть пустой"; return; }
+            # Убираем префикс v если есть
+            custom_ver="${custom_ver#v}"
+            echo -ne " Установить версию ${custom_ver}? [y/N]: "
+            read -r confirm
+            [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { warn "Отменено."; return; }
+            if _install_telemt_binary "${custom_ver}"; then
+                info "Telemt ${custom_ver} установлен ✓"
+            fi
+            ;;
+        0) return ;;
+        *) warn "Неверный выбор" ;;
+    esac
 }
 
 # ==============================
@@ -800,9 +851,10 @@ if systemctl is-active --quiet telemt 2>/dev/null; then
         for f in /lib/ld-musl-*.so.* /lib64/ld-musl-*.so.*; do [ -e "$f" ] && { LIBC="musl"; break; }; done
         curl -fsSL "https://github.com/telemt/telemt/releases/latest/download/telemt-${ARCH}-linux-${LIBC}.tar.gz" -o /tmp/telemt.tar.gz
         tar -xz -C /tmp -f /tmp/telemt.tar.gz && rm -f /tmp/telemt.tar.gz
-        if [[ -f /tmp/telemt ]]; then
+        EXT=$(find /tmp -maxdepth 1 -name "telemt*" -type f ! -name "*.tar.gz" | head -1)
+        if [[ -n "$EXT" ]]; then
             systemctl stop telemt
-            install -m 755 /tmp/telemt /usr/local/bin/telemt && rm -f /tmp/telemt
+            install -m 755 "$EXT" /usr/local/bin/telemt && rm -f "$EXT"
             command -v setcap &>/dev/null && setcap cap_net_bind_service=+ep /usr/local/bin/telemt 2>/dev/null
             systemctl start telemt
             log "Telemt: обновлён до $LATEST"
