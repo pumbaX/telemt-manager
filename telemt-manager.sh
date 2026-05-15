@@ -196,7 +196,7 @@ do_install() {
     echo "  --- Европа ---"
     echo "  7.  www.cloudflare.com"
     echo "  8.  www.bbc.co.uk"
-    echo "  9.  www.deutschebank.de"
+    echo "  9.  www.bild.de"
     echo "  10. www.lufthansa.com"
     echo "  --- Своё ---"
     echo "  11. Свой домен"
@@ -210,7 +210,7 @@ do_install() {
         6)  TLS_DOMAIN_L="www.wildberries.ru" ;;
         7)  TLS_DOMAIN_L="www.cloudflare.com" ;;
         8)  TLS_DOMAIN_L="www.bbc.co.uk" ;;
-        9)  TLS_DOMAIN_L="www.deutschebank.de" ;;
+        9)  TLS_DOMAIN_L="www.m.bild.de" ;;
         10) TLS_DOMAIN_L="www.lufthansa.com" ;;
         11)
             echo -ne " Введи домен (например: example.ru): "
