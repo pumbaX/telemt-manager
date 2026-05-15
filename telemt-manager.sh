@@ -185,38 +185,34 @@ do_install() {
 
     # --- Выбор домена маскировки ---
     echo ""
-    echo -e "${CYAN}Домены маскировки (TLS):${NC}"
-    echo "  --- Госсервисы ---"
+    echo -e "${CYAN}Домены маскировки (TLS 1.3 + HTTP/2):${NC}"
+    echo "  --- Россия ---"
     echo "  1.  www.gosuslugi.ru     (по умолчанию)"
-    echo "  --- Банки ---"
     echo "  2.  www.sberbank.ru"
     echo "  3.  www.tinkoff.ru"
-    echo "  4.  www.vtb.ru"
-    echo "  --- Магазины ---"
+    echo "  4.  www.yandex.ru"
     echo "  5.  www.ozon.ru"
     echo "  6.  www.wildberries.ru"
-    echo "  --- Видео ---"
-    echo "  7.  www.ivi.ru"
-    echo "  8.  okko.tv"
-    echo "  9.  www.kion.ru"
-    echo "  10. wink.ru"
-    echo "  11. www.kinopoisk.ru"
+    echo "  --- Европа ---"
+    echo "  7.  www.cloudflare.com"
+    echo "  8.  www.bbc.co.uk"
+    echo "  9.  www.deutschebank.de"
+    echo "  10. www.lufthansa.com"
     echo "  --- Своё ---"
-    echo "  12. Свой домен"
-    echo -ne " Выбор [1-12]: "
+    echo "  11. Свой домен"
+    echo -ne " Выбор [1-11]: "
     read -r domain_choice
     case $domain_choice in
         2)  TLS_DOMAIN_L="www.sberbank.ru" ;;
         3)  TLS_DOMAIN_L="www.tinkoff.ru" ;;
-        4)  TLS_DOMAIN_L="www.vtb.ru" ;;
+        4)  TLS_DOMAIN_L="www.yandex.ru" ;;
         5)  TLS_DOMAIN_L="www.ozon.ru" ;;
         6)  TLS_DOMAIN_L="www.wildberries.ru" ;;
-        7)  TLS_DOMAIN_L="www.ivi.ru" ;;
-        8)  TLS_DOMAIN_L="okko.tv" ;;
-        9)  TLS_DOMAIN_L="www.kion.ru" ;;
-        10) TLS_DOMAIN_L="wink.ru" ;;
-        11) TLS_DOMAIN_L="www.kinopoisk.ru" ;;
-        12)
+        7)  TLS_DOMAIN_L="www.cloudflare.com" ;;
+        8)  TLS_DOMAIN_L="www.bbc.co.uk" ;;
+        9)  TLS_DOMAIN_L="www.deutschebank.de" ;;
+        10) TLS_DOMAIN_L="www.lufthansa.com" ;;
+        11)
             echo -ne " Введи домен (например: example.ru): "
             read -r custom_domain
             [[ -z "$custom_domain" ]] && { error "Домен не может быть пустым"; return; }
@@ -855,7 +851,7 @@ EOF
 # ОБНОВЛЕНИЕ TELEMT
 # ==============================
 do_update_telemt() {
-    if ! systemctl list-unit-files 2>/dev/null | grep -q '^telemt\.service'; then
+    if [[ ! -f /etc/systemd/system/telemt.service ]] && [[ ! -x /usr/local/bin/telemt ]]; then
         error "Telemt не установлен"
         return
     fi
@@ -1132,7 +1128,11 @@ if systemctl is-active --quiet telemt 2>/dev/null; then
     CURRENT=$(norm_ver "$CURRENT_RAW")
     LATEST=$(norm_ver "$LATEST_RAW")
 
-    if [[ -n "$CURRENT" && -n "$LATEST" && "$CURRENT" != "$LATEST" ]]; then
+    if [[ -z "$LATEST" ]]; then
+        log "Telemt: не удалось получить последнюю версию с GitHub, пропуск"
+    elif [[ -z "$CURRENT" ]]; then
+        log "Telemt: не удалось получить текущую версию (API ${API_PORT} не ответил), пропуск"
+    elif [[ "$CURRENT" != "$LATEST" ]]; then
         log "Telemt: обновление $CURRENT -> $LATEST"
         ARCH=$(detect_arch); LIBC=$(detect_libc)
         if [[ -z "$ARCH" ]]; then
@@ -1195,15 +1195,17 @@ if [[ -f /usr/local/bin/telemt-panel ]]; then
     esac
     BN="telemt-panel-${AS}-linux-gnu.tar.gz"
 
-    LATEST_P_RAW=$(curl -s --max-time 10 "https://api.github.com/repos/amirotin/telemt_panel/releases/latest" | jq -r '.tag_name // ""')
+    PANEL_API=$(curl -s --max-time 10 "https://api.github.com/repos/amirotin/telemt_panel/releases/latest")
+    LATEST_P_RAW=$(echo "$PANEL_API" | jq -r '.tag_name // ""')
     CURRENT_P_RAW=$(/usr/local/bin/telemt-panel version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     LATEST_P=$(norm_ver "$LATEST_P_RAW")
     CURRENT_P=$(norm_ver "$CURRENT_P_RAW")
 
-    if [[ -n "$LATEST_P" && "$CURRENT_P" != "$LATEST_P" ]]; then
+    if [[ -z "$LATEST_P" ]]; then
+        log "Panel: не удалось получить последнюю версию, пропуск"
+    elif [[ "$CURRENT_P" != "$LATEST_P" ]]; then
         log "Panel: обновление $CURRENT_P -> $LATEST_P"
-        DL=$(curl -s --max-time 10 "https://api.github.com/repos/amirotin/telemt_panel/releases/latest" \
-            | jq -r --arg bn "$BN" '.assets[]? | select(.name == $bn) | .browser_download_url')
+        DL=$(echo "$PANEL_API" | jq -r --arg bn "$BN" '.assets[]? | select(.name == $bn) | .browser_download_url')
         if [[ -n "$DL" ]]; then
             TMP=$(mktemp -d)
             if curl -fsSL "$DL" -o "${TMP}/panel.tar.gz" && tar -xzf "${TMP}/panel.tar.gz" -C "$TMP"; then
@@ -1270,18 +1272,18 @@ while true; do
     echo -e "${CYAN}╔══════════════════════════════╗${NC}"
     echo -e "${CYAN}║      TELEMT MANAGER          ║${NC}"
     echo -e "${CYAN}╠══════════════════════════════╣${NC}"
-    echo -e "${CYAN}║${NC}  --- Telemt ---               ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  --- Telemt ---              ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  1. Установка                ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  2. Ссылки / статистика      ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  3. Добавить клиента         ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  4. Удалить клиента          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  5. Обновить Telemt          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  6. Полное удаление          ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  --- Панель ---               ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  --- Панель ---              ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  7. Установить панель        ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  8. Обновить панель          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  9. Удалить панель           ${CYAN}║${NC}"
-    echo -e "${CYAN}║${NC}  --- Система ---              ${CYAN}║${NC}"
+    echo -e "${CYAN}║${NC}  --- Система ---             ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  10. Автообновление          ${CYAN}║${NC}"
     echo -e "${CYAN}║${NC}  0. Выход                    ${CYAN}║${NC}"
     echo -e "${CYAN}╚══════════════════════════════╝${NC}"
